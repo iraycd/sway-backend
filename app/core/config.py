@@ -24,6 +24,22 @@ class Settings(BaseSettings):
     OPENROUTER_API_ENDPOINT: str = "https://openrouter.ai/api/v1/chat/completions"
     OPENROUTER_MODEL_NAME: str = "anthropic/claude-3.7-sonnet"
 
+    # JWT Authentication settings
+    SECRET_KEY: str = os.getenv(
+        "SECRET_KEY", "your-secret-key-for-development")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+
+    # OAuth settings
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    APPLE_CLIENT_ID: str = os.getenv("APPLE_CLIENT_ID", "com.teja.sai.service")
+    # Your Apple Developer Team ID
+    APPLE_TEAM_ID: str = os.getenv("APPLE_TEAM_ID", "")
+    APPLE_KEY_ID: str = os.getenv("APPLE_KEY_ID", "")    # Your private key ID
+    APPLE_PRIVATE_KEY_PATH: str = os.getenv(
+        "APPLE_PRIVATE_KEY_PATH", "/app/private_key.p8"
+    )
+
     # Computed settings
     DATABASE_URI: Optional[PostgresDsn] = None
 
