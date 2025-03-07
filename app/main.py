@@ -3,11 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
 from app.core.config import settings
-from app.db.base import Base
-from app.db.session import engine
-
-# Create database tables
-Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Sway Chat API",

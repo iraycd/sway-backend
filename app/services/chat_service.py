@@ -31,27 +31,55 @@ class ChatService:
         print(f"ChatService: Using endpoint: {self.api_endpoint}")
         print(f"ChatService: Using model: {self.model_name}")
 
-    def create_conversation(self, db: Session, conversation: ConversationCreate) -> Conversation:
-        """Create a new conversation"""
-        db_conversation = Conversation(name=conversation.name)
+    def create_conversation(
+        self, db: Session, conversation: ConversationCreate, user_id: uuid.UUID = None
+    ) -> Conversation:
+        """Create a new conversation with optional user association"""
+        db_conversation = Conversation(name=conversation.name, user_id=user_id)
         db.add(db_conversation)
         db.commit()
         db.refresh(db_conversation)
         return db_conversation
 
-    def get_conversation(self, db: Session, conversation_id: uuid.UUID) -> Optional[Conversation]:
+    def get_conversation(
+        self, db: Session, conversation_id: uuid.UUID
+    ) -> Optional[Conversation]:
         """Get a conversation by ID"""
         return db.query(Conversation).filter(Conversation.id == conversation_id).first()
 
-    def get_conversations(self, db: Session, skip: int = 0, limit: int = 100) -> List[Conversation]:
+    def get_conversations(
+        self, db: Session, skip: int = 0, limit: int = 100
+    ) -> List[Conversation]:
         """Get all conversations with pagination"""
         return db.query(Conversation).offset(skip).limit(limit).all()
 
-    def get_messages(self, db: Session, conversation_id: uuid.UUID, skip: int = 0, limit: int = 100) -> List[Message]:
-        """Get all messages for a conversation with pagination"""
-        return db.query(Message).filter(Message.conversation_id == conversation_id).offset(skip).limit(limit).all()
+    def get_user_conversations(
+        self, db: Session, user_id: uuid.UUID, skip: int = 0, limit: int = 100
+    ) -> List[Conversation]:
+        """Get all conversations for a specific user with pagination"""
+        return (
+            db.query(Conversation)
+            .filter(Conversation.user_id == user_id)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
-    async def process_message(self, db: Session, conversation_id: uuid.UUID, message: MessageCreate) -> List[Message]:
+    def get_messages(
+        self, db: Session, conversation_id: uuid.UUID, skip: int = 0, limit: int = 100
+    ) -> List[Message]:
+        """Get all messages for a conversation with pagination"""
+        return (
+            db.query(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    async def process_message(
+        self, db: Session, conversation_id: uuid.UUID, message: MessageCreate
+    ) -> List[Message]:
         """
         Process a user message and generate AI responses
 
@@ -71,7 +99,7 @@ class ChatService:
             conversation_id=conversation_id,
             content=message.content,
             sender_id=message.sender_id,
-            is_user=True
+            is_user=True,
         )
         db.add(user_message)
         db.commit()
@@ -84,24 +112,26 @@ class ChatService:
         try:
             # Layer 1: Analyze the conversation
             analysis = await self.conversation_analyzer.analyze_conversation(
-                message.content,
-                conversation_history
+                message.content, conversation_history
             )
 
             # Layer 2: Get the appropriate prompt
-            if analysis['queryType'] == 'SIMPLE' and analysis['recommendedApproach'] == 'CONCISE':
+            if (
+                analysis["queryType"] == "SIMPLE"
+                and analysis["recommendedApproach"] == "CONCISE"
+            ):
                 system_prompt = TherapyPrompt.get_concise_prompt()
             else:
                 system_prompt = TherapyPrompt.get_analyzed_prompt(analysis)
 
             # Get raw response from AI
-            raw_response = await self._get_raw_response(message.content, system_prompt, conversation_history)
+            raw_response = await self._get_raw_response(
+                message.content, system_prompt, conversation_history
+            )
 
             # Layer 3: Process the response into multiple messages
             response_messages = await self.response_processor.process_response(
-                raw_response,
-                analysis,
-                message.content
+                raw_response, analysis, message.content
             )
 
             # Save AI responses to database
@@ -111,7 +141,7 @@ class ChatService:
                     conversation_id=conversation_id,
                     content=response_text,
                     sender_id="AI",
-                    is_user=False
+                    is_user=False,
                 )
                 db.add(ai_message)
                 db_messages.append(ai_message)
@@ -129,14 +159,16 @@ class ChatService:
                 conversation_id=conversation_id,
                 content="Sorry, there was an error processing your message. Please try again.",
                 sender_id="AI",
-                is_user=False
+                is_user=False,
             )
             db.add(error_message)
             db.commit()
             db.refresh(error_message)
             return [error_message]
 
-    async def _get_raw_response(self, message: str, system_prompt: str, conversation_history: List[Message]) -> str:
+    async def _get_raw_response(
+        self, message: str, system_prompt: str, conversation_history: List[Message]
+    ) -> str:
         """Get a raw response from the AI model"""
         # Prepare conversation history for the API request
         message_history = []
@@ -150,13 +182,15 @@ class ChatService:
 
         for i in range(start_idx, len(conversation_history)):
             history_message = conversation_history[i]
-            message_history.append({
-                "role": "user" if history_message.is_user else "assistant",
-                "content": history_message.content
-            })
+            message_history.append(
+                {
+                    "role": "user" if history_message.is_user else "assistant",
+                    "content": history_message.content,
+                }
+            )
 
         # Add current user message if not already in history
-        if not conversation_history or conversation_history[-1].is_user == False:
+        if not conversation_history or not conversation_history[-1].is_user:
             message_history.append({"role": "user", "content": message})
 
         # Make API request
@@ -176,22 +210,26 @@ class ChatService:
 
             if response.status_code != 200:
                 print(
-                    f"ChatService: API request failed with status: {response.status_code}")
+                    f"ChatService: API request failed with status: {response.status_code}"
+                )
                 print(f"ChatService: Response body: {response.text}")
                 raise Exception(
-                    f"API request failed with status: {response.status_code}")
+                    f"API request failed with status: {response.status_code}"
+                )
 
             response_data = response.json()
             return response_data["choices"][0]["message"]["content"]
 
-    async def stream_response(self, websocket: WebSocket, db: Session, conversation_id: uuid.UUID, message: MessageCreate):
+    async def stream_response(
+        self, websocket: WebSocket, db: Session, conversation_id: uuid.UUID, message: MessageCreate
+    ):
         """Stream a response to the user's message"""
         # Save user message to database
         user_message = Message(
             conversation_id=conversation_id,
             content=message.content,
             sender_id=message.sender_id,
-            is_user=True
+            is_user=True,
         )
         db.add(user_message)
         db.commit()
@@ -203,12 +241,14 @@ class ChatService:
         try:
             # Layer 1: Analyze the conversation
             analysis = await self.conversation_analyzer.analyze_conversation(
-                message.content,
-                conversation_history
+                message.content, conversation_history
             )
 
             # Layer 2: Get the appropriate prompt
-            if analysis['queryType'] == 'SIMPLE' and analysis['recommendedApproach'] == 'CONCISE':
+            if (
+                analysis["queryType"] == "SIMPLE"
+                and analysis["recommendedApproach"] == "CONCISE"
+            ):
                 system_prompt = TherapyPrompt.get_concise_prompt()
             else:
                 system_prompt = TherapyPrompt.get_analyzed_prompt(analysis)
@@ -224,10 +264,12 @@ class ChatService:
 
             for i in range(start_idx, len(conversation_history)):
                 history_message = conversation_history[i]
-                message_history.append({
-                    "role": "user" if history_message.is_user else "assistant",
-                    "content": history_message.content
-                })
+                message_history.append(
+                    {
+                        "role": "user" if history_message.is_user else "assistant",
+                        "content": history_message.content,
+                    }
+                )
 
             # Make streaming API request
             async with httpx.AsyncClient(timeout=None) as client:
@@ -242,13 +284,15 @@ class ChatService:
                         "messages": message_history,
                         "stream": True,
                     },
-                    timeout=None
+                    timeout=None,
                 )
 
                 if response.status_code != 200:
-                    await websocket.send_json({
-                        "error": f"API request failed with status: {response.status_code}"
-                    })
+                    await websocket.send_json(
+                        {
+                            "error": f"API request failed with status: {response.status_code}"
+                        }
+                    )
                     return
 
                 # Process the streaming response
@@ -270,13 +314,14 @@ class ChatService:
                                 full_response += content
 
                                 # Send chunks to the client
-                                await websocket.send_json({
-                                    "type": "chunk",
-                                    "content": content
-                                })
+                                await websocket.send_json(
+                                    {"type": "chunk", "content": content}
+                                )
 
                                 # If we have a complete sentence or enough characters, save as a partial message
-                                if buffer.endswith((".", "!", "?", "\n")) or len(buffer) > 100:
+                                if buffer.endswith((".", "!", "?", "\n")) or len(
+                                    buffer
+                                ) > 100:
                                     buffer = ""
 
                         except json.JSONDecodeError:
@@ -287,30 +332,29 @@ class ChatService:
                     conversation_id=conversation_id,
                     content=full_response,
                     sender_id="AI",
-                    is_user=False
+                    is_user=False,
                 )
                 db.add(ai_message)
                 db.commit()
                 db.refresh(ai_message)
 
                 # Send completion message
-                await websocket.send_json({
-                    "type": "complete",
-                    "message_id": str(ai_message.id)
-                })
+                await websocket.send_json(
+                    {"type": "complete", "message_id": str(ai_message.id)}
+                )
 
         except Exception as e:
             print(f"Error in stream_response: {str(e)}")
-            await websocket.send_json({
-                "error": "Sorry, there was an error processing your message."
-            })
+            await websocket.send_json(
+                {"error": "Sorry, there was an error processing your message."}
+            )
 
             # Save error message to database
             error_message = Message(
                 conversation_id=conversation_id,
                 content="Sorry, there was an error processing your message. Please try again.",
                 sender_id="AI",
-                is_user=False
+                is_user=False,
             )
             db.add(error_message)
             db.commit()

@@ -2,14 +2,20 @@ from datetime import datetime
 from typing import List, Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 # Shared properties
 class MessageBase(BaseModel):
-    content: str
+    content: str = Field(..., min_length=1, max_length=4000)
     is_user: bool = True
-    sender_id: Optional[str] = None
+    sender_id: Optional[str] = Field(None, max_length=255)
+
+    @validator("content")
+    def validate_content(cls, v):
+        if not v or v.strip() == "":
+            raise ValueError("Message content cannot be empty")
+        return v
 
 
 # Properties to receive on message creation

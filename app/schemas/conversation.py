@@ -2,12 +2,18 @@ from datetime import datetime
 from typing import List, Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 # Shared properties
 class ConversationBase(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=100)
+
+    @validator("name")
+    def validate_name(cls, v):
+        if v is not None and v.strip() == "":
+            return None
+        return v
 
 
 # Properties to receive on conversation creation

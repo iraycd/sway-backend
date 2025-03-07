@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
@@ -8,6 +8,10 @@ from app.schemas.message import MessageCreate, MessageResponse
 from app.schemas.conversation import ConversationCreate, ConversationResponse, ConversationList
 from app.services.chat_service import ChatService
 from app.api.dependencies import get_chat_service
+from app.api.auth import get_current_user
+from app.api.permissions import verify_conversation_owner, verify_message_access, get_current_user_or_raise
+from app.models.user import User
+from app.models.conversation import Conversation
 
 router = APIRouter()
 
@@ -16,12 +20,13 @@ router = APIRouter()
 async def create_conversation(
     conversation: ConversationCreate,
     db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service)
+    chat_service: ChatService = Depends(get_chat_service),
+    current_user: User = Depends(get_current_user_or_raise)
 ):
     """
-    Create a new conversation.
+    Create a new conversation for the authenticated user.
     """
-    return chat_service.create_conversation(db, conversation)
+    return chat_service.create_conversation(db, conversation, current_user.id)
 
 
 @router.get("/conversations/", response_model=List[ConversationResponse])
@@ -29,26 +34,25 @@ async def get_conversations(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service)
+    chat_service: ChatService = Depends(get_chat_service),
+    current_user: User = Depends(get_current_user_or_raise)
 ):
     """
-    Get all conversations with pagination.
+    Get all conversations for the authenticated user with pagination.
     """
-    return chat_service.get_conversations(db, skip=skip, limit=limit)
+    return chat_service.get_user_conversations(db, current_user.id, skip=skip, limit=limit)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(
     conversation_id: uuid.UUID,
     db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service)
+    chat_service: ChatService = Depends(get_chat_service),
+    conversation: Conversation = Depends(verify_conversation_owner)
 ):
     """
-    Get a conversation by ID.
+    Get a conversation by ID if the user is the owner.
     """
-    conversation = chat_service.get_conversation(db, conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
 
 
@@ -57,10 +61,12 @@ async def create_message(
     conversation_id: uuid.UUID,
     message: MessageCreate,
     db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service)
+    chat_service: ChatService = Depends(get_chat_service),
+    conversation: Conversation = Depends(verify_conversation_owner)
 ):
     """
     Create a new message in a conversation and get AI responses.
+    Only the conversation owner can create messages.
     """
     try:
         return await chat_service.process_message(db, conversation_id, message)
@@ -77,15 +83,13 @@ async def get_messages(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service)
+    chat_service: ChatService = Depends(get_chat_service),
+    conversation: Conversation = Depends(verify_conversation_owner)
 ):
     """
     Get all messages for a conversation with pagination.
+    Only the conversation owner can access messages.
     """
-    conversation = chat_service.get_conversation(db, conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
     return chat_service.get_messages(db, conversation_id, skip=skip, limit=limit)
 
 
@@ -93,18 +97,40 @@ async def get_messages(
 async def websocket_endpoint(
     websocket: WebSocket,
     conversation_id: uuid.UUID,
+    token: str = Query(...),
     db: Session = Depends(get_db),
     chat_service: ChatService = Depends(get_chat_service)
 ):
     """
     WebSocket endpoint for streaming responses.
+    Requires authentication token and conversation ownership.
     """
     await websocket.accept()
 
-    # Check if conversation exists
-    conversation = chat_service.get_conversation(db, conversation_id)
-    if conversation is None:
-        await websocket.send_json({"error": "Conversation not found"})
+    # Verify token and get user
+    try:
+        from app.api.auth import jwt, settings, TokenPayload
+        payload = jwt.decode(token, settings.SECRET_KEY,
+                             algorithms=[settings.ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            await websocket.send_json({"error": "Invalid authentication token"})
+            await websocket.close()
+            return
+
+        # Check if conversation exists and user owns it
+        conversation = chat_service.get_conversation(db, conversation_id)
+        if not conversation:
+            await websocket.send_json({"error": "Conversation not found"})
+            await websocket.close()
+            return
+
+        if conversation.user_id != uuid.UUID(user_id):
+            await websocket.send_json({"error": "Not authorized to access this conversation"})
+            await websocket.close()
+            return
+    except Exception as e:
+        await websocket.send_json({"error": f"Authentication error: {str(e)}"})
         await websocket.close()
         return
 
@@ -131,5 +157,5 @@ async def websocket_endpoint(
         print(f"Error in WebSocket: {str(e)}")
         try:
             await websocket.send_json({"error": f"An error occurred: {str(e)}"})
-        except:
+        except Exception:
             pass  # Connection might already be closed
